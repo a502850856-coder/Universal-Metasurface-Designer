@@ -1,0 +1,906 @@
+import React, { useState, useEffect, useRef } from 'react';
+import { 
+  Settings, Download, Info, FileCode, Lightbulb, 
+  Target, Zap, Aperture, Layers, Activity, ArrowRight,
+  Cpu, Grid3X3, Plus, Trash2, Upload, Database, CheckCircle,
+  Type, Calculator, Eye, Grid, BookOpen, ChevronUp, ChevronDown, Minimize2, Maximize2,
+  ListPlus, Microscope, Sigma, Hash
+} from 'lucide-react';
+
+// --- Math Utilities ---
+const PI = Math.PI;
+const TWO_PI = 2 * PI;
+
+const factorial = (n) => (n <= 1 ? 1 : n * factorial(n - 1));
+
+// Optimized Hermite Polynomials (Iterative)
+function hermitePoly(n, x) {
+  if (n === 0) return 1;
+  if (n === 1) return 2 * x;
+  
+  let h_prev2 = 1;       // H_{n-2}
+  let h_prev1 = 2 * x;   // H_{n-1}
+  let h_curr = 0;
+  
+  for (let i = 2; i <= n; i++) {
+    h_curr = 2 * x * h_prev1 - 2 * (i - 1) * h_prev2;
+    h_prev2 = h_prev1;
+    h_prev1 = h_curr;
+  }
+  return h_curr;
+}
+
+// Optimized Laguerre Polynomials (Iterative)
+function laguerrePoly(p, l, x) {
+  if (p === 0) return 1;
+  if (p === 1) return 1 + Math.abs(l) - x;
+  
+  let l_prev2 = 1;
+  let l_prev1 = 1 + Math.abs(l) - x;
+  let l_curr = 0;
+  
+  for (let i = 2; i <= p; i++) {
+    l_curr = ((2 * (i - 1) + Math.abs(l) + 1 - x) * l_prev1 - (i - 1 + Math.abs(l)) * l_prev2) / i;
+    l_prev2 = l_prev1;
+    l_prev1 = l_curr;
+  }
+  return l_curr;
+}
+
+// Color Map: Phase -> RGB
+function phaseToColor(phaseRad) {
+  let normalized = phaseRad / TWO_PI;
+  normalized = normalized - Math.floor(normalized);
+  
+  const h = normalized;
+  const s = 0.8;
+  const l = 0.5;
+  
+  let r, g, b;
+  const q = l < 0.5 ? l * (1 + s) : l + s - l * s;
+  const p = 2 * l - q;
+  
+  const hue2rgb = (p, q, t) => {
+    if (t < 0) t += 1;
+    if (t > 1) t -= 1;
+    if (t < 1 / 6) return p + (q - p) * 6 * t;
+    if (t < 1 / 2) return q;
+    if (t < 2 / 3) return p + (q - p) * (2 / 3 - t) * 6;
+    return p;
+  };
+  
+  r = hue2rgb(p, q, h + 1 / 3);
+  g = hue2rgb(p, q, h);
+  b = hue2rgb(p, q, h - 1 / 3);
+  return [Math.round(r * 255), Math.round(g * 255), Math.round(b * 255)];
+}
+
+const App = () => {
+  // --- 1. Mode Definitions (English) ---
+  const MODES = {
+    // Basic Focusing
+    point: { 
+      label: 'Focusing Lens (Lens)', cat: 'basic',
+      desc: 'Focuses a plane wave to a diffraction-limited spot (2D focusing).',
+      app: 'Microscopy, fiber coupling, laser lithography.',
+      formula: 'Φ = -k(√(r² + f²) - f)'
+    },
+    cylindrical: { 
+      label: 'Cylindrical Lens', cat: 'basic',
+      desc: 'Focuses in one dimension only (e.g., X-axis), creating a focal line.',
+      app: 'Light-sheet microscopy, barcode scanning, astigmatism correction.',
+      formula: 'Φ = -k(√(x² + f²) - f)'
+    },
+    off_axis: { 
+      label: 'Off-Axis Lens', cat: 'basic',
+      desc: 'Combines lens and prism phase profiles to focus light off-center.',
+      app: 'Compact spectrometers, fluorescence signal separation, AR optics.',
+      formula: 'Φ = -k(√( (x-x₀)² + (y-y₀)² + f² ) - f_eff)'
+    },
+    astigmatic: { 
+      label: 'Astigmatic Lens', cat: 'basic',
+      desc: 'Different focal lengths for X and Y axes, causing focal spot rotation.',
+      app: '3D particle tracking (Micro-PIV), depth sensing.',
+      formula: 'Φ = -k(√(x² + f_x²) - f_x) - k(√(y² + f_y²) - f_y)'
+    },
+    
+    // Structured Light
+    vortex: { 
+      label: 'Vortex Lens', cat: 'structured',
+      desc: 'Carries orbital angular momentum (OAM) with a central phase singularity.',
+      app: 'Spiral phase contrast imaging, edge detection, optical tweezers.',
+      formula: 'Φ = Φ_lens + l·θ'
+    },
+    perfect_vortex: { 
+      label: 'Perfect Vortex', cat: 'structured',
+      desc: 'Vortex beam with a constant ring radius independent of topological charge.',
+      app: 'Label-free cell counting, particle trapping and sorting.',
+      formula: 'Φ = k_r·r + l·θ + Φ_lens'
+    },
+    bessel: { 
+      label: 'Axicon / Bessel', cat: 'structured',
+      desc: 'Generates non-diffracting Bessel beams with extended depth of focus (EDOF).',
+      app: 'Focus-free flow cytometry, EDOF imaging, laser drilling.',
+      formula: 'Φ = -k·sin(β)·r  (i.e., k_r·r)'
+    },
+    lg_beam: { 
+      label: 'LG Beam', cat: 'structured',
+      desc: 'Laguerre-Gauss modes with radial (p) and azimuthal (l) indices.',
+      app: 'Optical communications (MDM), high-dimensional quantum states.',
+      formula: 'Φ = l·θ + π·step(-L_p(ρ))'
+    },
+    hg_beam: { 
+      label: 'HG Beam', cat: 'structured',
+      desc: 'Hermite-Gauss modes with rectangular symmetry.',
+      app: 'Laser cavity mode selection, beam shaping.',
+      formula: 'Φ = Φ_lens + π·step(-H_m(x)·H_n(y))'
+    },
+    airy: { 
+      label: 'Airy Beam', cat: 'structured',
+      desc: 'Non-diffracting wave packet with self-acceleration (curved trajectory).',
+      app: '3D single-molecule localization, seeing around corners.',
+      formula: 'Φ = α·(x³ + y³)'
+    },
+
+    // Complex Fields
+    multi_focus: { 
+      label: 'Multi-Focus', cat: 'complex',
+      desc: 'Holographic multiplexing to generate multiple focal points simultaneously.',
+      app: 'Multi-plane tomography, parallel optical trapping.',
+      formula: 'Φ = arg( Σ exp(i·Φ_focus_j) )'
+    },
+    optical_lattice: { 
+      label: 'Optical Lattice', cat: 'complex',
+      desc: 'Interference of multiple beams to create periodic potential wells.',
+      app: 'Cold atom trapping, photonic crystal fabrication.',
+      formula: 'Φ = arg( Σ exp(i·Φ_beam_j) )'
+    },
+
+    // Algorithms
+    gs_algo: { 
+      label: 'Holography (GS Algo)', cat: 'algo',
+      desc: 'Gerchberg-Saxton iterative algorithm for arbitrary target patterns.',
+      app: 'Holographic displays, flat-top beam shaping.',
+      formula: 'Φ = Iterative_FFT(Target_Amp)'
+    },
+  };
+
+  const [mode, setMode] = useState('perfect_vortex'); 
+  const [showInfo, setShowInfo] = useState(true); 
+  
+  // --- 2. Parameters ---
+  const [params, setParams] = useState({
+    wavelength: 630,      // nm
+    period: 400,          // nm
+    gridSize: 200,        // N x N
+    focalLength: 100,     // um (fx)
+    enableAperture: true, // Aperture Mask
+    use3Bit: false,       // 3-bit Quantization
+
+    focalLengthY: 150,    // um (fy)
+    krOverK: 0.15,        // Axicon NA
+    vortexCharge: 2,      // l
+    offAxisX: 20,         // um
+    offAxisY: 0,          // um
+    airyAlpha: 10,        // Cubic phase strength
+    latticeSpacing: 10,   // um
+    
+    lg_p: 0,              // Radial index p
+    hg_m: 1,              // Order m (x)
+    hg_n: 1,              // Order n (y)
+    beamWaist: 20,        // um (w0)
+
+    gsText: "META",       // Target Text
+    
+    isPointSource: false, 
+    sourceDistance: 200,  // um
+    
+    fft_z: 100,           // Propagation distance z
+    fft_pad: 2,           // Padding factor
+
+    focalPoints: [
+      {x: -20, y: 0, z: 100},
+      {x: 20, y: 0, z: 100}
+    ]
+  });
+
+  const [libraryType, setLibraryType] = useState('virtual'); 
+  const [realLibraryData, setRealLibraryData] = useState(null); 
+  const [libStats, setLibStats] = useState(null); 
+  const [fileName, setFileName] = useState("");
+
+  const canvasRef = useRef(null);
+  const diameter_um = (params.period * params.gridSize) / 1000;
+
+  // --- File Upload ---
+  const handleFileUpload = (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    setFileName(file.name);
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      const lines = event.target.result.split('\n');
+      const data = [];
+      let minR = 1000, maxR = 0, minP = 100, maxP = -100;
+      
+      for (let i = 0; i < lines.length; i++) {
+        const line = lines[i].trim();
+        if (!line || /^[a-zA-Z]/.test(line)) continue;
+        
+        const parts = line.split(',').map(s => s.trim());
+        if (parts.length >= 2) {
+          const r = parseFloat(parts[0]); // Radius (nm)
+          const p = parseFloat(parts[1]); // Phase (rad)
+          const amp = parts.length >= 3 ? parseFloat(parts[2]) : 1.0; // Amp
+          
+          if (!isNaN(r) && !isNaN(p)) {
+            data.push({ r, p, amp });
+            if (r < minR) minR = r;
+            if (r > maxR) maxR = r;
+            if (p < minP) minP = p;
+            if (p > maxP) maxP = p;
+          }
+        }
+      }
+      
+      if (data.length > 0) {
+        data.sort((a, b) => a.p - b.p);
+        setRealLibraryData(data);
+        setLibStats({ count: data.length, minR, maxR, minP, maxP });
+      } else {
+        alert("Failed to parse CSV. Ensure format: Radius(nm), Phase(rad), [Amp]");
+      }
+    };
+    reader.readAsText(file);
+  };
+
+  // --- Multi-Focus Operations ---
+  const addFocalPoint = () => {
+    setParams(p => ({
+      ...p,
+      focalPoints: [...p.focalPoints, {x: 0, y: 0, z: p.focalLength || 100}]
+    }));
+  };
+  const updateFocalPoint = (index, field, value) => {
+    const newPoints = [...params.focalPoints];
+    newPoints[index] = { ...newPoints[index], [field]: parseFloat(value) };
+    setParams(p => ({ ...p, focalPoints: newPoints }));
+  };
+  const removeFocalPoint = (index) => {
+    const newPoints = params.focalPoints.filter((_, i) => i !== index);
+    setParams(p => ({ ...p, focalPoints: newPoints }));
+  };
+
+  // --- 3. Phase Calculation Core ---
+  const calculatePhase = (x, y) => {
+    const k_factor = TWO_PI / (params.wavelength * 1e-3);
+    const r = Math.sqrt(x**2 + y**2);
+    const theta = Math.atan2(y, x);
+
+    let phi_src = 0;
+    if (params.isPointSource) {
+      phi_src = -k_factor * (Math.sqrt(r**2 + params.sourceDistance**2) - params.sourceDistance);
+    }
+
+    let phi = 0;
+
+    switch (mode) {
+      case 'point': phi = -k_factor * (Math.sqrt(r**2 + params.focalLength**2) - params.focalLength); break;
+      case 'cylindrical': phi = -k_factor * (Math.sqrt(x**2 + params.focalLength**2) - params.focalLength); break;
+      case 'off_axis': {
+          const path = Math.sqrt((x - params.offAxisX)**2 + (y - params.offAxisY)**2 + params.focalLength**2);
+          const path0 = Math.sqrt(params.offAxisX**2 + params.offAxisY**2 + params.focalLength**2);
+          phi = -k_factor * (path - path0);
+        } break;
+      case 'astigmatic': 
+          phi = -k_factor * (Math.sqrt(x**2 + params.focalLength**2) - params.focalLength) - k_factor * (Math.sqrt(y**2 + params.focalLengthY**2) - params.focalLengthY); break;
+      case 'vortex': phi = -k_factor * (Math.sqrt(r**2 + params.focalLength**2) - params.focalLength) + params.vortexCharge * theta; break;
+      case 'perfect_vortex': phi = k_factor * params.krOverK * r + params.vortexCharge * theta - k_factor * (Math.sqrt(r**2 + params.focalLength**2) - params.focalLength); break;
+      case 'bessel': phi = k_factor * params.krOverK * r; break;
+      case 'lg_beam': {
+           const rho = (r * Math.sqrt(2)) / params.beamWaist;
+           const laguerreVal = laguerrePoly(params.lg_p, params.vortexCharge, rho**2);
+           phi = params.vortexCharge * theta + (laguerreVal < 0 ? PI : 0);
+        } break;
+      case 'hg_beam': {
+           const xi = (x * Math.sqrt(2)) / params.beamWaist;
+           const eta = (y * Math.sqrt(2)) / params.beamWaist;
+           // Fix: Add lens focusing phase + HG mode phase
+           const phi_lens = -k_factor * (Math.sqrt(r**2 + params.focalLength**2) - params.focalLength);
+           const phi_mode = (hermitePoly(params.hg_m, xi) * hermitePoly(params.hg_n, eta) < 0) ? PI : 0;
+           phi = phi_lens + phi_mode;
+        } break;
+      case 'airy': 
+        const x_norm = x / (diameter_um/2); const y_norm = y / (diameter_um/2);
+        phi = params.airyAlpha * (Math.pow(x_norm, 3) + Math.pow(y_norm, 3)); break;
+      case 'multi_focus': {
+          let u_real = 0, u_imag = 0;
+          params.focalPoints.forEach(fp => {
+             const path = Math.sqrt((x - fp.x)**2 + (y - fp.y)**2 + fp.z**2);
+             const ph = -k_factor * (path - fp.z); 
+             u_real += Math.cos(ph); u_imag += Math.sin(ph);
+          });
+          phi = Math.atan2(u_imag, u_real);
+        } break;
+      case 'optical_lattice': {
+           const d = params.latticeSpacing; 
+           let u_real = 0, u_imag = 0;
+           [[d,0], [-d,0], [0,d], [0,-d]].forEach(p => {
+              const ph = -k_factor * (Math.sqrt((x-p[0])**2 + (y-p[1])**2 + params.focalLength**2) - params.focalLength);
+              u_real += Math.cos(ph); u_imag += Math.sin(ph);
+           });
+           phi = Math.atan2(u_imag, u_real);
+         } break;
+      case 'gs_algo': return 0;
+      default: break;
+    }
+    return (phi + phi_src) % TWO_PI;
+  };
+
+  // --- 4. Drawing Effect ---
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    const w = canvas.width;
+    const h = canvas.height;
+    
+    if (mode === 'gs_algo') {
+      ctx.fillStyle = '#0f172a';
+      ctx.fillRect(0,0,w,h);
+      ctx.fillStyle = 'white';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      const fontSize = Math.min(w, h) / (params.gsText.length * 0.6 + 1);
+      ctx.font = `bold ${fontSize}px sans-serif`;
+      ctx.fillText(params.gsText || "TEXT", w/2, h/2);
+      ctx.strokeStyle = '#6366f1';
+      ctx.lineWidth = 4;
+      ctx.strokeRect(0,0,w,h);
+      ctx.font = '12px sans-serif';
+      ctx.fillStyle = '#94a3b8';
+      ctx.fillText("GS Target Amplitude Preview", w/2, h - 20);
+      return;
+    }
+
+    const imageData = ctx.createImageData(w, h);
+    for (let i = 0; i < h; i++) {
+      for (let j = 0; j < w; j++) {
+        const x_um = ((j / w) - 0.5) * diameter_um;
+        const y_um = ((i / h) - 0.5) * diameter_um; 
+        if (params.enableAperture && (x_um**2 + y_um**2 > (diameter_um/2)**2)) {
+           const idx = (i * w + j) * 4;
+           imageData.data[idx] = 20; imageData.data[idx+1] = 20; imageData.data[idx+2] = 20; imageData.data[idx+3] = 255;
+           continue;
+        }
+        const phi = calculatePhase(x_um, -y_um);
+        
+        // Normalize 0-1
+        let normalized_phi = (phi % TWO_PI) / TWO_PI;
+        if (normalized_phi < 0) normalized_phi += 1;
+
+        // [New] 3-bit Quantization
+        if (params.use3Bit) {
+            // 8 levels: 0, 1/8, 2/8 ... 7/8
+            normalized_phi = Math.round(normalized_phi * 8) / 8;
+            if (normalized_phi >= 1) normalized_phi = 0; // Wrap around
+        }
+
+        const final_phi = normalized_phi * TWO_PI;
+        const [r, g, b] = phaseToColor(final_phi);
+        
+        const idx = (i * w + j) * 4;
+        imageData.data[idx] = r; imageData.data[idx+1] = g; imageData.data[idx+2] = b; imageData.data[idx+3] = 255;
+      }
+    }
+    ctx.putImageData(imageData, 0, 0);
+  }, [params, mode, diameter_um]);
+
+  // --- Python Export ---
+  const handleDownloadGDSScript = () => {
+    let libraryDataStr = "None";
+    if (libraryType === 'real' && realLibraryData) libraryDataStr = JSON.stringify(realLibraryData);
+
+    const pyContent = `
+import os
+import json
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+import gdspy
+from PIL import Image, ImageDraw, ImageFont
+
+# =========================================================
+# Universal Metasurface Designer - Export Script
+# Mode: ${mode} (${MODES[mode].label})
+# Description: ${MODES[mode].desc}
+# =========================================================
+
+# --- 1. Configuration ---
+focus_type = "${mode}"
+lam_nm = ${params.wavelength}
+lam_um = lam_nm * 1e-3
+period_nm = ${params.period}
+grid_size = ${params.gridSize}
+focal_length_um = ${params.focalLength}
+focal_length_y_um = ${params.focalLengthY}
+is_point_source = ${params.isPointSource ? 'True' : 'False'}
+source_s_um = ${params.sourceDistance}
+enable_aperture = ${params.enableAperture ? 'True' : 'False'}
+use_3bit = ${params.use3Bit ? 'True' : 'False'}
+
+# Advanced Parameters
+focal_points = ${JSON.stringify(params.focalPoints)}
+charge = ${params.vortexCharge}
+kr_ratio = ${params.krOverK}
+off_axis_x_um = ${params.offAxisX}
+off_axis_y_um = ${params.offAxisY}
+airy_alpha = ${params.airyAlpha}
+lg_p = ${params.lg_p}
+hg_m = ${params.hg_m}
+hg_n = ${params.hg_n}
+beam_waist_um = ${params.beamWaist}
+gs_text = "${params.gsText}"
+lattice_spacing_um = ${params.latticeSpacing}
+
+# Simulation
+sim_z_um = ${params.fft_z}
+sim_pad = ${params.fft_pad}
+
+# Output
+output_dir = "Output_${mode}"
+os.makedirs(output_dir, exist_ok=True)
+print(f"🚀 Starting generation: {focus_type}")
+if use_3bit: print("ℹ️ 3-bit (8-level) Phase Quantization Enabled")
+
+# --- 2. Unit Library & Mapping ---
+library_type = "${libraryType}"
+real_library_data = ${libraryDataStr}
+
+def get_unit_from_phase(target_phase):
+    # [New] 3-bit Quantization
+    if use_3bit:
+        # Normalize to 0-1
+        val = (target_phase % (2*np.pi)) / (2*np.pi)
+        # Quantize to 8 levels
+        val = np.round(val * 8) / 8.0
+        target_phase = val * 2 * np.pi
+
+    if library_type == 'virtual':
+        max_r = (period_nm / 1000.0) * 0.45
+        radius = (target_phase / (2*np.pi)) * max_r
+        return radius * 1000.0, 1.0 
+    else:
+        target_phase = target_phase % (2*np.pi)
+        best_r = 0
+        best_amp = 1.0
+        min_diff = 1000
+        for item in real_library_data:
+            diff = abs(item['p'] - target_phase)
+            if diff < min_diff:
+                min_diff = diff
+                best_r = item['r'] 
+                best_amp = item.get('amp', 1.0)
+        return best_r, best_amp
+
+# --- 3. Physics Calculations ---
+k_factor = 2 * np.pi / lam_um
+
+def hermite(n, x):
+    if n == 0: return 1.0
+    if n == 1: return 2.0 * x
+    h_prev2, h_prev1 = 1.0, 2.0 * x
+    h_curr = 0.0
+    for i in range(2, n + 1):
+        h_curr = 2 * x * h_prev1 - 2 * (i - 1) * h_prev2
+        h_prev2, h_prev1 = h_prev1, h_curr
+    return h_prev1
+
+def laguerre_sign(p, l, rho_sq):
+    if p == 0: return 1.0
+    if p == 1: return 1.0 + abs(l) - rho_sq
+    return 1.0 
+
+def generate_gs_phase():
+    img_size = grid_size
+    image = Image.new('L', (img_size, img_size), 0)
+    draw = ImageDraw.Draw(image)
+    try: font = ImageFont.truetype("arial.ttf", int(img_size/2))
+    except: font = ImageFont.load_default()
+    bbox = draw.textbbox((0, 0), gs_text, font=font)
+    w, h = bbox[2]-bbox[0], bbox[3]-bbox[1]
+    draw.text(((img_size-w)/2, (img_size-h)/2), gs_text, fill=255, font=font)
+    target_amp = np.array(image) / 255.0
+    target_amp = np.flipud(target_amp)
+    psi = np.exp(1j * np.random.rand(img_size, img_size) * 2 * np.pi)
+    for i in range(50):
+        field = np.fft.fftshift(np.fft.fft2(np.fft.ifftshift(psi)))
+        field = target_amp * np.exp(1j * np.angle(field))
+        psi = np.fft.fftshift(np.fft.ifft2(np.fft.ifftshift(field)))
+        psi = np.exp(1j * np.angle(psi))
+    return np.angle(psi)
+
+# --- 4. Phase Generation ---
+cell_size_um = period_nm / 1000.0
+diameter_um = cell_size_um * grid_size
+coords = (np.arange(grid_size) - grid_size/2.0 + 0.5) * cell_size_um
+XX, YY = np.meshgrid(coords, coords)
+RR = np.sqrt(XX**2 + YY**2)
+Theta = np.arctan2(YY, XX)
+
+PHI = np.zeros_like(RR)
+
+# Mode Logic
+if focus_type == 'point':
+    PHI = -k_factor * (np.sqrt(RR**2 + focal_length_um**2) - focal_length_um)
+elif focus_type == 'cylindrical':
+    PHI = -k_factor * (np.sqrt(XX**2 + focal_length_um**2) - focal_length_um)
+elif focus_type == 'off_axis':
+    path = np.sqrt((XX - off_axis_x_um)**2 + (YY - off_axis_y_um)**2 + focal_length_um**2)
+    path0 = np.sqrt(off_axis_x_um**2 + off_axis_y_um**2 + focal_length_um**2)
+    PHI = -k_factor * (path - path0)
+elif focus_type == 'astigmatic':
+    tx = -k_factor * (np.sqrt(XX**2 + focal_length_um**2) - focal_length_um)
+    ty = -k_factor * (np.sqrt(YY**2 + focal_length_y_um**2) - focal_length_y_um)
+    PHI = tx + ty
+elif focus_type == 'vortex':
+    PHI = -k_factor * (np.sqrt(RR**2 + focal_length_um**2) - focal_length_um) + charge * Theta
+elif focus_type == 'perfect_vortex':
+    PHI = k_factor * kr_ratio * RR + charge * Theta
+    PHI -= k_factor * (np.sqrt(RR**2 + focal_length_um**2) - focal_length_um)
+elif focus_type == 'bessel':
+    PHI = k_factor * kr_ratio * RR
+elif focus_type == 'airy':
+    x_n = XX / (diameter_um/2)
+    y_n = YY / (diameter_um/2)
+    PHI = airy_alpha * (x_n**3 + y_n**3)
+elif focus_type == 'multi_focus':
+    U = np.zeros_like(RR, dtype=complex)
+    for fp in focal_points:
+        path = np.sqrt((XX - fp['x'])**2 + (YY - fp['y'])**2 + fp['z']**2)
+        U += np.exp(1j * (-k_factor * (path - fp['z'])))
+    PHI = np.angle(U)
+elif focus_type == 'optical_lattice':
+    d = lattice_spacing_um
+    pts = [(d,0), (-d,0), (0,d), (0,-d)]
+    U = np.zeros_like(RR, dtype=complex)
+    for px, py in pts:
+        path = np.sqrt((XX - px)**2 + (YY - py)**2 + focal_length_um**2)
+        U += np.exp(1j * (-k_factor * (path - focal_length_um)))
+    PHI = np.angle(U)
+elif focus_type == 'lg_beam':
+    rho = RR * np.sqrt(2) / beam_waist_um
+    PHI = charge * Theta
+    mask_neg = np.where(laguerre_sign(lg_p, charge, rho**2) < 0, np.pi, 0)
+    PHI += mask_neg
+elif focus_type == 'hg_beam':
+    xi = XX * np.sqrt(2) / beam_waist_um
+    eta = YY * np.sqrt(2) / beam_waist_um
+    hm = np.frompyfunc(hermite, 2, 1)(hg_m, xi).astype(float)
+    hn = np.frompyfunc(hermite, 2, 1)(hg_n, eta).astype(float)
+    # Lens + Mode Phase
+    phi_lens = -k_factor * (np.sqrt(RR**2 + focal_length_um**2) - focal_length_um)
+    phi_mode = np.where(hm * hn < 0, np.pi, 0)
+    PHI = phi_lens + phi_mode
+elif focus_type == 'gs_algo':
+    PHI = generate_gs_phase()
+
+if is_point_source:
+    PHI -= k_factor * (np.sqrt(RR**2 + source_s_um**2) - source_s_um)
+
+PHI = np.mod(PHI, 2*np.pi)
+MASK = np.ones_like(RR, dtype=bool)
+if enable_aperture:
+    MASK = RR <= (diameter_um / 2)
+    PHI[~MASK] = 0 
+
+# --- 5. Export & Simulation ---
+csv_rows = []
+radius_map = np.zeros_like(PHI)
+real_field_amp = np.zeros_like(PHI, dtype=float)
+real_field_phase = np.zeros_like(PHI, dtype=float)
+
+lib = gdspy.GdsLibrary(unit=1e-6, precision=1e-9)
+cell = lib.new_cell(f"META_{focus_type.upper()}")
+
+for i in range(grid_size):
+    for j in range(grid_size):
+        if not MASK[i, j]: continue
+        r_val_nm, amp_val = get_unit_from_phase(PHI[i, j])
+        radius_map[i, j] = r_val_nm
+        real_field_amp[i, j] = amp_val
+        real_field_phase[i, j] = PHI[i, j]
+        csv_rows.append({'x_um': XX[i, j], 'y_um': YY[i, j], 'phase': PHI[i, j], 'radius_nm': r_val_nm})
+        if r_val_nm > 5:
+            poly = gdspy.Round((XX[i, j], YY[i, j]), r_val_nm/1000.0, layer=1)
+            cell.add(poly)
+
+pd.DataFrame(csv_rows).to_csv(os.path.join(output_dir, f"{focus_type}_data.csv"), index=False)
+lib.write_gds(os.path.join(output_dir, f"{focus_type}.gds"))
+
+# Plotting
+plt.figure(figsize=(10, 4))
+plt.subplot(1, 2, 1)
+plt.imshow(np.where(MASK, PHI, np.nan), cmap='hsv', origin='lower', extent=[XX.min(), XX.max(), YY.min(), YY.max()])
+plt.title(f"Target Phase ({focus_type})")
+plt.colorbar()
+plt.subplot(1, 2, 2)
+plt.imshow(np.where(MASK, radius_map, np.nan), cmap='viridis', origin='lower', extent=[XX.min(), XX.max(), YY.min(), YY.max()])
+plt.title("Radius (nm)")
+plt.colorbar()
+plt.savefig(os.path.join(output_dir, "design_report.png"), dpi=150)
+plt.close()
+
+# FFT Simulation
+E = real_field_amp * np.exp(1j * real_field_phase) * MASK.astype(float)
+N_sim = int(grid_size * sim_pad)
+if sim_pad > 1:
+    E_padded = np.zeros((N_sim, N_sim), dtype=complex)
+    st = (N_sim - grid_size) // 2
+    E_padded[st:st+grid_size, st:st+grid_size] = E
+    E_fft = np.fft.fftshift(np.fft.fft2(E_padded))
+else:
+    E_fft = np.fft.fftshift(np.fft.fft2(E))
+I_focal = np.abs(E_fft)**2
+pixel_pitch_m = period_nm * 1e-9
+fx = np.fft.fftfreq(N_sim, d=pixel_pitch_m)
+Xf_um = np.fft.fftshift(fx) * lam_um * sim_z_um
+plt.figure(figsize=(5, 4))
+zoom = 0.5
+idx_start = int(N_sim * (1-zoom)/2)
+idx_end = int(N_sim * (1+zoom)/2)
+plt.imshow(I_focal[idx_start:idx_end, idx_start:idx_end], cmap='inferno', origin='lower', 
+           extent=[Xf_um[idx_start], Xf_um[idx_end], Xf_um[idx_start], Xf_um[idx_end]])
+plt.title(f"Focal Intensity @ z={sim_z_um}um")
+plt.colorbar()
+plt.tight_layout()
+plt.savefig(os.path.join(output_dir, "focal_plane.png"), dpi=150)
+plt.close()
+
+print("🎉 All Done!")
+`;
+    const blob = new Blob([pyContent], { type: "text/x-python" });
+    const link = document.createElement("a");
+    link.href = URL.createObjectURL(blob);
+    link.download = `meta_design_${mode}.py`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
+
+  // Helper: Slider with Label
+  const ControlRow = ({ label, children }) => (
+    <div className="mb-3">
+      <label className="text-xs font-medium text-slate-600 mb-1 block">{label}</label>
+      <div className="flex items-center gap-3">{children}</div>
+    </div>
+  );
+  const ParamInput = ({ val, min, max, step, onChange }) => (
+    <>
+      <input type="range" min={min} max={max} step={step} value={val} onChange={(e) => onChange(Number(e.target.value))} className="flex-1 h-1.5 bg-slate-200 rounded-lg appearance-none cursor-pointer accent-indigo-600" />
+      <input type="number" value={val} step={step} onChange={(e) => onChange(Number(e.target.value))} className="w-16 h-7 text-xs border border-slate-300 rounded px-1 text-center font-mono focus:ring-2 focus:ring-indigo-500 outline-none" />
+    </>
+  );
+
+  return (
+    <div className="flex flex-col h-screen bg-slate-50 text-slate-900 font-sans overflow-hidden">
+      {/* Navbar */}
+      <header className="bg-white border-b border-slate-200 px-6 py-4 flex justify-between items-center shadow-sm z-10">
+        <div>
+          <h1 className="text-xl font-bold text-slate-800 flex items-center gap-2">
+            <Aperture className="text-indigo-600" />
+            Universal Metasurface Designer v11
+          </h1>
+          <p className="text-xs text-slate-500 mt-1">
+            Engineering Edition: 3-bit Quantization | Real Library Support | Point Source Correction
+          </p>
+        </div>
+        <button onClick={handleDownloadGDSScript} className="flex items-center gap-2 bg-slate-900 hover:bg-slate-800 text-white px-4 py-2 rounded-lg text-sm font-medium transition-colors shadow-lg shadow-slate-200">
+           <FileCode size={16} /> Export Python
+        </button>
+      </header>
+
+      <div className="flex flex-1 overflow-hidden">
+        {/* Sidebar */}
+        <div className="w-96 bg-white border-r border-slate-200 overflow-y-auto flex flex-col">
+           <div className="p-4 border-b border-slate-100">
+             <h3 className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-2">Design Mode</h3>
+             <select value={mode} onChange={(e) => setMode(e.target.value)} className="w-full bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 text-sm font-medium text-slate-700 outline-none focus:ring-2 focus:ring-indigo-500">
+               {Object.entries(MODES).map(([k, m]) => <option key={k} value={k}>{m.label}</option>)}
+             </select>
+           </div>
+           
+           {/* Library & Aperture */}
+           <div className="p-5 border-b border-slate-100 space-y-4 bg-slate-50/50">
+              <div className="flex items-center justify-between">
+                 <span className="text-xs font-bold text-slate-700 flex items-center gap-2">
+                   <Aperture size={14} className="text-indigo-500"/> Circular Aperture
+                 </span>
+                 <input type="checkbox" checked={params.enableAperture} onChange={e => setParams({...params, enableAperture: e.target.checked})} className="accent-indigo-600 w-4 h-4 cursor-pointer"/>
+              </div>
+
+              {/* 3-bit Switch */}
+              <div className="flex items-center justify-between">
+                 <span className="text-xs font-bold text-slate-700 flex items-center gap-2">
+                   <Hash size={14} className="text-indigo-500"/> 3-bit Quantization
+                 </span>
+                 <input type="checkbox" checked={params.use3Bit} onChange={e => setParams({...params, use3Bit: e.target.checked})} className="accent-indigo-600 w-4 h-4 cursor-pointer"/>
+              </div>
+
+              <div>
+                <h3 className="text-xs font-bold text-slate-700 flex items-center gap-2 mb-2">
+                  <Database size={14} className="text-indigo-500"/> Unit Library
+                </h3>
+                <div className="flex bg-white border border-slate-200 rounded-lg p-1 mb-3 shadow-sm">
+                   <button onClick={() => setLibraryType('virtual')} className={`flex-1 py-1.5 text-xs font-medium rounded-md transition-all ${libraryType === 'virtual' ? 'bg-indigo-50 text-indigo-700 ring-1 ring-indigo-200' : 'text-slate-500 hover:bg-slate-50'}`}>Virtual (Ideal)</button>
+                   <button onClick={() => setLibraryType('real')} className={`flex-1 py-1.5 text-xs font-medium rounded-md transition-all ${libraryType === 'real' ? 'bg-indigo-50 text-indigo-700 ring-1 ring-indigo-200' : 'text-slate-500 hover:bg-slate-50'}`}>Real (CSV)</button>
+                </div>
+                
+                {libraryType === 'real' && (
+                  <div className="space-y-2 animate-in fade-in slide-in-from-top-1">
+                    <label className="border-2 border-dashed border-indigo-200 bg-white hover:bg-indigo-50/30 rounded-lg p-3 text-center block cursor-pointer transition-colors group">
+                       <input type="file" accept=".csv" onChange={handleFileUpload} className="hidden" />
+                       <div className="flex flex-col items-center gap-1">
+                         {realLibraryData ? <CheckCircle size={20} className="text-green-500"/> : <Upload size={20} className="text-indigo-300 group-hover:text-indigo-500"/>}
+                         <span className="text-xs text-indigo-600 font-medium truncate max-w-[200px]">
+                           {fileName || "Upload .csv Library"}
+                         </span>
+                       </div>
+                    </label>
+                    
+                    {libStats && (
+                      <div className="bg-white border border-slate-200 rounded p-2 text-[10px] text-slate-500 space-y-1">
+                        <div className="flex justify-between"><span>Count:</span> <span className="font-mono text-slate-800">{libStats.count}</span></div>
+                        <div className="flex justify-between"><span>Radius:</span> <span className="font-mono text-slate-800">{libStats.minR}-{libStats.maxR} nm</span></div>
+                        <div className="flex justify-between"><span>Phase:</span> <span className="font-mono text-slate-800">{libStats.minP.toFixed(2)}~{libStats.maxP.toFixed(2)} rad</span></div>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+           </div>
+
+           {/* Light Source */}
+           <div className="p-5 border-b border-slate-100 bg-amber-50/30">
+              <div className="flex items-center justify-between mb-2">
+                 <span className="text-xs font-bold text-amber-800 flex items-center gap-2">
+                   <Lightbulb size={14} className="text-amber-500"/> Light Source
+                 </span>
+              </div>
+              <div className="flex bg-white border border-amber-200 rounded-lg p-1 mb-2 shadow-sm">
+                 <button onClick={() => setParams({...params, isPointSource: false})} className={`flex-1 py-1.5 text-xs font-medium rounded-md transition-all ${!params.isPointSource ? 'bg-amber-500 text-white shadow-sm' : 'text-slate-500 hover:bg-slate-50'}`}>Plane Wave</button>
+                 <button onClick={() => setParams({...params, isPointSource: true})} className={`flex-1 py-1.5 text-xs font-medium rounded-md transition-all ${params.isPointSource ? 'bg-amber-500 text-white shadow-sm' : 'text-slate-500 hover:bg-slate-50'}`}>Point Source</button>
+              </div>
+              
+              {params.isPointSource && (
+                <div className="animate-in fade-in slide-in-from-top-1">
+                   <ControlRow label="Source Distance s (μm)">
+                      <ParamInput val={params.sourceDistance} min={50} max={2000} step={10} onChange={v => setParams({...params, sourceDistance: v})} />
+                   </ControlRow>
+                   <p className="text-[10px] text-amber-600/80 text-center mt-1">
+                     *Phase Compensation Applied
+                   </p>
+                </div>
+              )}
+           </div>
+
+           <div className="p-5 space-y-4 pb-10">
+              <h3 className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-4">Core Params</h3>
+              <ControlRow label="Wavelength (nm)"><ParamInput val={params.wavelength} min={400} max={1550} step={10} onChange={v => setParams({...params, wavelength: v})} /></ControlRow>
+              <ControlRow label="Period P (nm)"><ParamInput val={params.period} min={200} max={800} step={10} onChange={v => setParams({...params, period: v})} /></ControlRow>
+              <ControlRow label="Grid N (NxN)"><ParamInput val={params.gridSize} min={50} max={500} step={10} onChange={v => setParams({...params, gridSize: v})} /></ControlRow>
+              {!['bessel', 'gs_algo', 'airy', 'multi_focus', 'lg_beam', 'hg_beam', 'cylindrical'].includes(mode) && (
+                <ControlRow label="Focal Length f (μm)"><ParamInput val={params.focalLength} min={10} max={500} step={5} onChange={v => setParams({...params, focalLength: v})} /></ControlRow>
+              )}
+              {mode === 'cylindrical' && <ControlRow label="Focal Length f (μm)"><ParamInput val={params.focalLength} min={10} max={500} step={5} onChange={v => setParams({...params, focalLength: v})} /></ControlRow>}
+              {mode === 'astigmatic' && <ControlRow label="Focal Length Y fy (μm)"><ParamInput val={params.focalLengthY} min={10} max={500} step={5} onChange={v => setParams({...params, focalLengthY: v})} /></ControlRow>}
+              {mode === 'off_axis' && (
+                <>
+                  <ControlRow label="Offset X (μm)"><ParamInput val={params.offAxisX} min={-100} max={100} step={5} onChange={v => setParams({...params, offAxisX: v})} /></ControlRow>
+                  <ControlRow label="Offset Y (μm)"><ParamInput val={params.offAxisY} min={-100} max={100} step={5} onChange={v => setParams({...params, offAxisY: v})} /></ControlRow>
+                </>
+              )}
+              {(['vortex', 'perfect_vortex', 'lg_beam']).includes(mode) && (
+                 <ControlRow label="Charge l"><ParamInput val={params.vortexCharge} min={-10} max={10} step={1} onChange={v => setParams({...params, vortexCharge: v})} /></ControlRow>
+              )}
+              {(['perfect_vortex', 'bessel']).includes(mode) && (
+                 <ControlRow label="NA (kr/k)"><ParamInput val={params.krOverK} min={0.05} max={0.9} step={0.01} onChange={v => setParams({...params, krOverK: v})} /></ControlRow>
+              )}
+              {(mode === 'lg_beam' || mode === 'hg_beam') && (
+                 <ControlRow label="Waist w0 (μm)"><ParamInput val={params.beamWaist} min={5} max={100} step={1} onChange={v => setParams({...params, beamWaist: v})} /></ControlRow>
+              )}
+              {mode === 'lg_beam' && <ControlRow label="Radial p"><ParamInput val={params.lg_p} min={0} max={5} step={1} onChange={v => setParams({...params, lg_p: v})} /></ControlRow>}
+              {mode === 'hg_beam' && (
+                 <>
+                  <ControlRow label="Order m (x)"><ParamInput val={params.hg_m} min={0} max={10} step={1} onChange={v => setParams({...params, hg_m: v})} /></ControlRow>
+                  <ControlRow label="Order n (y)"><ParamInput val={params.hg_n} min={0} max={10} step={1} onChange={v => setParams({...params, hg_n: v})} /></ControlRow>
+                 </>
+              )}
+              {mode === 'airy' && (
+                 <ControlRow label="Airy Alpha"><ParamInput val={params.airyAlpha} min={1} max={50} step={1} onChange={v => setParams({...params, airyAlpha: v})} /></ControlRow>
+              )}
+              {mode === 'optical_lattice' && (
+                 <>
+                   <ControlRow label="Focal Length f (μm)"><ParamInput val={params.focalLength} min={10} max={500} step={5} onChange={v => setParams({...params, focalLength: v})} /></ControlRow>
+                   <ControlRow label="Lattice Spacing d (μm)"><ParamInput val={params.latticeSpacing} min={2} max={50} step={1} onChange={v => setParams({...params, latticeSpacing: v})} /></ControlRow>
+                 </>
+              )}
+              {mode === 'multi_focus' && (
+                <div className="bg-slate-50 border border-slate-200 rounded-lg p-3">
+                   <div className="flex justify-between items-center mb-2">
+                     <span className="text-xs font-bold text-slate-500">Multi-Focal Points (x, y, z)</span>
+                     <button onClick={addFocalPoint} className="text-indigo-600 hover:bg-indigo-50 p-1 rounded"><Plus size={14}/></button>
+                   </div>
+                   <div className="space-y-2 max-h-32 overflow-y-auto">
+                     {params.focalPoints.map((fp, i) => (
+                       <div key={i} className="flex gap-1 items-center">
+                         <span className="text-[10px] text-slate-400 w-3">{i+1}</span>
+                         <input type="number" value={fp.x} onChange={e => updateFocalPoint(i, 'x', e.target.value)} className="w-10 text-[10px] border rounded px-1" placeholder="x"/>
+                         <input type="number" value={fp.y} onChange={e => updateFocalPoint(i, 'y', e.target.value)} className="w-10 text-[10px] border rounded px-1" placeholder="y"/>
+                         <input type="number" value={fp.z} onChange={e => updateFocalPoint(i, 'z', e.target.value)} className="w-10 text-[10px] border rounded px-1" placeholder="z"/>
+                         <button onClick={() => removeFocalPoint(i)} className="text-red-400 hover:text-red-600 ml-auto"><Trash2 size={12}/></button>
+                       </div>
+                     ))}
+                   </div>
+                </div>
+              )}
+              {mode === 'gs_algo' && (
+                <div className="bg-indigo-50 p-3 rounded-lg border border-indigo-100 mb-4">
+                   <label className="text-xs font-bold text-indigo-900 mb-2 block flex items-center gap-2"><Type size={14}/> Target Pattern (Text)</label>
+                   <input type="text" value={params.gsText} onChange={(e) => setParams({...params, gsText: e.target.value})} className="w-full border border-indigo-200 rounded px-2 py-1 text-sm font-bold text-center uppercase" placeholder="Enter text..." maxLength={10} />
+                </div>
+              )}
+              <div className="pt-4 border-t border-slate-100">
+                 <h3 className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-2 flex items-center gap-2"><Calculator size={14}/> FFT Simulation</h3>
+                 <ControlRow label="Propagation z (μm)"><ParamInput val={params.fft_z} min={10} max={2000} step={10} onChange={v => setParams({...params, fft_z: v})} /></ControlRow>
+                 <ControlRow label="Zero Padding"><ParamInput val={params.fft_pad} min={1} max={4} step={1} onChange={v => setParams({...params, fft_pad: v})} /></ControlRow>
+              </div>
+           </div>
+        </div>
+
+        {/* Right Preview */}
+        <div className="flex-1 bg-slate-100 p-6 flex flex-col overflow-hidden gap-4">
+          <div className="flex-1 bg-white rounded-2xl shadow-sm border border-slate-200 flex relative overflow-hidden">
+             <div className="flex-1 flex items-center justify-center bg-slate-50 relative cursor-crosshair">
+                <div className="relative shadow-xl border-4 border-white bg-white overflow-hidden" style={{borderRadius: params.enableAperture ? '50%' : '12px'}}>
+                  <canvas ref={canvasRef} width={500} height={500} className="w-[500px] h-[500px] block" />
+                </div>
+             </div>
+             
+             {/* Info Panel */}
+             <div className={`absolute top-4 left-4 bg-white/95 backdrop-blur-md rounded-xl shadow-lg border border-indigo-100 transition-all duration-300 overflow-hidden ${showInfo ? 'w-72' : 'w-10 h-10 flex items-center justify-center'}`}>
+                {showInfo ? (
+                  <>
+                    <div className="flex items-center justify-between p-3 border-b border-indigo-50 cursor-pointer hover:bg-indigo-50/50" onClick={() => setShowInfo(false)}>
+                        <h4 className="text-sm font-bold text-indigo-900 flex items-center gap-2"><BookOpen size={16}/> Applications & Physics</h4>
+                        <Minimize2 size={14} className="text-slate-400"/>
+                    </div>
+                    <div className="p-4 pt-2 text-xs text-slate-600 leading-relaxed">
+                      <p className="font-semibold text-slate-800 mb-1">{MODES[mode].label}</p>
+                      <p className="mb-3 italic opacity-80">{MODES[mode].desc}</p>
+                      
+                      {/* Formula */}
+                      <div className="bg-slate-900 p-2.5 rounded-lg text-green-400 font-mono text-[10px] mb-3 shadow-inner border border-slate-700 overflow-x-auto whitespace-nowrap">
+                         <div className="text-slate-500 mb-1 flex items-center gap-1"><Sigma size={10}/> Phase Formula:</div>
+                         {MODES[mode].formula}
+                         {params.isPointSource && <span className="text-amber-400"> - k(√(r²+s²) - s)</span>}
+                      </div>
+
+                      <div className="bg-indigo-50 p-2.5 rounded-lg text-indigo-800 border border-indigo-100 relative">
+                          <span className="font-bold block mb-1 flex items-center gap-1"><Microscope size={12}/> Typical Uses:</span>
+                          {MODES[mode].app}
+                      </div>
+                    </div>
+                  </>
+                ) : (
+                  <button onClick={() => setShowInfo(true)} className="text-indigo-600 hover:text-indigo-800"><BookOpen size={20}/></button>
+                )}
+             </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+export default App;
